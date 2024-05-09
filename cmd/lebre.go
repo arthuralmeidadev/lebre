@@ -129,6 +129,87 @@ func main() {
 		help()
 		return
 
+	case "init":
+		prompt := color.New(color.FgCyan)
+		type ServerConfig struct {
+			name         string
+			user         string
+			password     string
+			maxConns     uint8
+			timeoutLimit uint16
+			backUpOn     string
+			backUpCycle  uint32
+			nodeLimit    uint32
+			cacheLimit   uint32
+		}
+
+		serverConfig := ServerConfig{
+			maxConns:     15,
+			timeoutLimit: 5000,
+			backUpCycle:  300000,
+			nodeLimit:    3500,
+			cacheLimit:   5242880,
+		}
+
+		var passwordRepeat string
+
+		fmt.Println(`
+			     ┌──┐                                                           
+                             │  └─┐                                                         
+                            ┌┘    │                                                         
+                  ┌──────┐  │     └┐                                                        
+                  │      └┐ │      │                                                        
+                  │       └─┘      │                                                        
+                  └─┐        ─┐    │                                                        
+                    └─┐       └─   ├──┐                                                     
+                      └─┐          │  └───┐                                                 
+                        └─┐               └┐                                                
+                          ├┐               └┐                                               
+                         ┌┴┴─        ─┬─┐   └┐                                              
+                     ┌───┘            └─┘    └┐                                             
+                  ┌──┘                        │                                             
+               ┌──┘               │          ┌┘                                             
+             ┌─┘                  └┬──┐    ┌─┘                                              
+           ┌─┘                     │  └────┘                                                
+         ┌─┘                       │  ___       _______   ________  ________  _______       
+        ┌┘                         │ |\  \     |\  ___ \ |\   __  \|\   __  \|\  ___ \      
+       ┌┘                  │      │  \ \  \    \ \   __/|\ \  \|\ /\ \  \|\  \ \   __/|     
+      ┌┘            ┌────┐ │      │   \ \  \    \ \  \_|/_\ \   __  \ \   _  _\ \  \_|/__   
+      │          ┌──┘    ├┐      │     \ \  \____\ \  \_|\ \ \  \|\  \ \  \\  \\ \  \_|\ \  
+     ┌┘         ─┘       └┼┐     │      \ \_______\ \_______\ \_______\ \__\\ _\\ \_______\ 
+     │                    ││     │       \|_______|\|_______|\|_______|\|__|\|__|\|_______| 
+┌────┘                   ┌┴┴┐    │                                                          
+│                       ┌┤  │    │          ####   ## # ##  #  #  # # ## ####  ##  #        
+└┐     ┌─┬┬────        ─┴┴┐ │    └─┐ ####### #### # # ##########   ##  #  # #  ##### ## ### 
+ └─────┘ ││               └─┤      │#### #   ### ## ## #   #####     #    # #               
+         └┤                 └──────      # # ##   ##  #  ###### #                           
+          └─────────────────#  #    ############    ##   #  ##                              
+          # #   #    #    #   #    # ###  # # #                                             `)
+
+		prompt.Print("\nServer name: ")
+		fmt.Scanf("%s\n", &serverConfig.name)
+		prompt.Print("User: ")
+		fmt.Scanf("%s\n", &serverConfig.user)
+		prompt.Print("Password: ")
+		fmt.Scanf("%s\n", &serverConfig.password)
+		prompt.Print("Repeat password: ")
+		fmt.Scanf("%s\n", &passwordRepeat)
+		prompt.Print("Maximum number of connections (DEFAULT 15): ")
+		fmt.Scanf("%d\n", &serverConfig.maxConns)
+		prompt.Print("Timout threshold in milliseconds (DEFAULT 5000): ")
+		fmt.Scanf("%d\n", &serverConfig.timeoutLimit)
+		prompt.Print("Turn on backup? (y(yes)/n(no)): ")
+		fmt.Scanf("%s\n", &serverConfig.backUpOn)
+		if serverConfig.backUpOn == "y" {
+			prompt.Print("Backup cycle in milliseconds (DEFAULT 300000): ")
+			fmt.Scanf("%d\n", &serverConfig.backUpCycle)
+		}
+		prompt.Print("Limit for simultaneous nodes (DEFAULT 3500): ")
+		fmt.Scanf("%d\n", &serverConfig.nodeLimit)
+		prompt.Print("Cache limit in bytes (DEFAULT 5242880): ")
+		fmt.Scanf("%d\n", &serverConfig.cacheLimit)
+		return
+
 	case "start":
 		listener, err := net.Listen("tcp", ":5052")
 		if err != nil {
