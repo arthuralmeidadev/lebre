@@ -3,13 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"lebre/internal"
 	"net"
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/fatih/color"
-	"github.com/howeyc/gopass"
 )
 
 type Cache struct {
@@ -46,12 +44,12 @@ func (cache *Cache) Delete(key string) {
 }
 
 func handleClient(conn net.Conn, cache *Cache) {
-	logger := color.New(color.FgHiBlack)
+	logger := internal.NewCli()
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		cmd := scanner.Text()
-		logger.Println("[LOG]: ", cmd)
+		logger.Log(fmt.Sprintf("[LOG]: %s", cmd))
 
 		parts := strings.Fields(cmd)
 
@@ -95,168 +93,110 @@ func handleClient(conn net.Conn, cache *Cache) {
 	}
 }
 
-func help() {
-	bold := color.New(color.Bold)
-	yellow := color.New(color.FgYellow)
-	commandsTable := [][3]string{
-		{"init", "", "Creates a new server"},
-		{"start", "", "Starts the server"},
-		{"config (get|set)", "", "Configures the server"},
-		{"help", "[command]", "Shows this menu"},
-	}
-
-	title := color.New(color.FgHiBlue).Add(color.Bold)
-	title.Println("\nLebre cache server help:")
-	fmt.Println("┌───────────────────────────────────────────────────────────────────────────────────────┐")
-	for _, row := range commandsTable {
-		bold.Printf("│\t%-20s", row[0])
-		yellow.Printf(" %-15s", row[1])
-		fmt.Printf(":\t%-40s│\n", row[2])
-	}
-	fmt.Println("└───────────────────────────────────────────────────────────────────────────────────────┘")
-}
-
 func main() {
-	prompt := color.New(color.FgCyan)
-	warning := color.New(color.FgYellow)
-	info := color.New(color.Bold)
-	errLog := color.New(color.FgHiRed)
+	cli := internal.NewCli()
 	arguments := os.Args[1:]
 	cache := NewCache()
 
 	if len(arguments) == 0 {
-		help()
+		cli.Help()
 		return
 	}
 
 	switch arguments[0] {
 	case "help":
-		help()
+		cli.Help()
 		return
 
 	case "init":
-		type ServerConfig struct {
-			name             string
-			user             string
-			password         string
-			port             uint32
+		type PoolConfig struct {
 			maxConns         uint8
 			timeoutThreshold uint16
 			backUpOn         string
 			backUpCycle      uint32
 			nodeLimit        uint32
 			cacheLimit       uint32
+			idleThreshold    uint16
+		}
+
+		type ServerConfig struct {
+			name       string
+			user       string
+			password   string
+			port       uint32
+			poolConfig PoolConfig
 		}
 
 		serverConfig := ServerConfig{
-			port:             5051,
-			maxConns:         15,
-			timeoutThreshold: 5000,
-			backUpCycle:      300000,
-			nodeLimit:        3500,
-			cacheLimit:       5242880,
+			port: 5051,
+			poolConfig: PoolConfig{
+				maxConns:         15,
+				timeoutThreshold: 5000,
+				backUpCycle:      300000,
+				nodeLimit:        3500,
+				cacheLimit:       5242880,
+				idleThreshold:    3600,
+			},
 		}
 
 		var passwordRepeat string
 
-		warning.Println(`			     ┌──┐                                                           
-                             │  └─┐                                                         
-                            ┌┘    │                                                         
-                  ┌──────┐  │     └┐                                                        
-                  │      └┐ │      │                                                        
-                  │       └─┘      │                                                        
-                  └─┐        ─┐    │                                                        
-                    └─┐       └─   ├──┐                                                     
-                      └─┐          │  └───┐                                                 
-                        └─┐               └┐                                                
-                          ├┐               └┐                                               
-                         ┌┴┴─        ─┬─┐   └┐                                              
-                     ┌───┘            └─┘    └┐                                             
-                  ┌──┘                        │                                             
-               ┌──┘               │          ┌┘                                             
-             ┌─┘                  └┬──┐    ┌─┘                                              
-           ┌─┘                     │  └────┘                                                
-         ┌─┘                       │  ___       _______   ________  ________  _______       
-        ┌┘                         │ |\  \     |\  ___ \ |\   __  \|\   __  \|\  ___ \      
-       ┌┘                  │      │  \ \  \    \ \   __/|\ \  \|\ /\ \  \|\  \ \   __/|     
-      ┌┘            ┌────┐ │      │   \ \  \    \ \  \_|/_\ \   __  \ \   _  _\ \  \_|/__   
-      │          ┌──┘    ├┐      │     \ \  \____\ \  \_|\ \ \  \|\  \ \  \\  \\ \  \_|\ \  
-     ┌┘         ─┘       └┼┐     │      \ \_______\ \_______\ \_______\ \__\\ _\\ \_______\ 
-     │                    ││     │       \|_______|\|_______|\|_______|\|__|\|__|\|_______| 
-┌────┘                   ┌┴┴┐    │                                                          
-│                       ┌┤  │    │          ####   ## # ##  #  #  # # ## ####  ##  #        
-└┐     ┌─┬┬────        ─┴┴┐ │    └─┐ ####### #### # # ##########   ##  #  # #  ##### ## ### 
- └─────┘ ││               └─┤      │#### #   ### ## ## #   #####     #    # #               
-         └┤                 └──────      # # ##   ##  #  ###### #                           
-          └─────────────────#  #    ############    ##   #  ##                              
-          # #   #    #    #   #    # ###  # # #                                             `)
-
-		info.Println("\n Lebre cache server v1.0 running init")
-		prompt.Print("\nServer name: ")
-		fmt.Scanf("%s\n", &serverConfig.name)
-		prompt.Print("User: ")
-		fmt.Scanf("%s\n", &serverConfig.user)
-
-		prompt.Print("Password: ")
-		pwdInput, err := gopass.GetPasswdMasked()
-		if err != nil {
-			fmt.Println("Error reading password:", err)
-			return
-		}
-		serverConfig.password = string(pwdInput)
-
-		prompt.Print("Repeat password: ")
-		rPwdInput, err := gopass.GetPasswdMasked()
-		if err != nil {
-			fmt.Println("Error reading password:", err)
-			return
-		}
-		passwordRepeat = string(rPwdInput)
+		cli.Lebre()
+		cli.Highlight("\n Lebre cache server v1.0 running init\n")
+		cli.Input("Server name", &serverConfig.name)
+		cli.Input("User", &serverConfig.user)
+		serverConfig.password = cli.HiddenInput("Password")
+		passwordRepeat = cli.HiddenInput("Repeat password")
 
 		for serverConfig.password != passwordRepeat ||
 			len(serverConfig.password) < 8 {
 
 			if serverConfig.password != passwordRepeat {
-				errLog.Println("Passwords do not match")
+				cli.Error("Passwords do not match")
 			}
 
 			if len(serverConfig.password) < 8 {
-				errLog.Println("Password too short")
+				cli.Error("Password too short")
 			}
 
-			prompt.Print("Password: ")
-			pwdInput, err := gopass.GetPasswdMasked()
-			if err != nil {
-				errLog.Println("Error reading password:", err)
-				return
-			}
-			serverConfig.password = string(pwdInput)
-
-			prompt.Print("Repeat password: ")
-			rPwdInput, err := gopass.GetPasswdMasked()
-			if err != nil {
-				errLog.Println("Error reading password:", err)
-				return
-			}
-			passwordRepeat = string(rPwdInput)
+			serverConfig.password = cli.HiddenInput("Password")
+			passwordRepeat = cli.HiddenInput("Repeat password")
 		}
 
-		prompt.Printf("Port (DEFAULT %d): ", serverConfig.port)
-		fmt.Scanf("%s\n", &serverConfig.port)
-		prompt.Printf("Maximum number of connections (DEFAULT %d): ", serverConfig.maxConns)
-		fmt.Scanf("%d\n", &serverConfig.maxConns)
-		prompt.Printf("Timout threshold in milliseconds (DEFAULT %d): ", serverConfig.timeoutThreshold)
-		fmt.Scanf("%d\n", &serverConfig.timeoutThreshold)
-		prompt.Print("Turn on backup? (y(yes)/n(no)): ")
-		fmt.Scanf("%s\n", &serverConfig.backUpOn)
-		if serverConfig.backUpOn == "y" {
-			prompt.Printf("Backup cycle in milliseconds (DEFAULT %d): ", serverConfig.backUpCycle)
-			fmt.Scanf("%d\n", &serverConfig.backUpCycle)
+		cli.Input(
+			fmt.Sprintf("Port (DEFAULT %d)", serverConfig.port),
+			&serverConfig.port,
+		)
+		cli.Input(
+			fmt.Sprintf("Maximum number of connections (DEFAULT %d)", serverConfig.poolConfig.maxConns),
+			&serverConfig.poolConfig.maxConns,
+		)
+		cli.Input(
+			fmt.Sprintf("Timout threshold in milliseconds (DEFAULT %d)", serverConfig.poolConfig.timeoutThreshold),
+			serverConfig.poolConfig.timeoutThreshold,
+		)
+
+		cli.Input("Turn on backup? (y(yes) / n(no))", &serverConfig.poolConfig.backUpOn)
+		if serverConfig.poolConfig.backUpOn == "y" {
+			cli.Input(
+				fmt.Sprintf("Backup cycle in milliseconds (DEFAULT %d)", serverConfig.poolConfig.backUpCycle),
+				serverConfig.poolConfig.backUpCycle,
+			)
 		}
-		prompt.Printf("Limit for simultaneous nodes (DEFAULT %d): ", serverConfig.nodeLimit)
-		fmt.Scanf("%d\n", &serverConfig.nodeLimit)
-		prompt.Printf("Cache limit in bytes (DEFAULT %d): ", serverConfig.cacheLimit)
-		fmt.Scanf("%d\n", &serverConfig.cacheLimit)
+
+		cli.Input(
+			fmt.Sprintf("Limit for simultaneous nodes (DEFAULT %d)", serverConfig.poolConfig.nodeLimit),
+			serverConfig.poolConfig.nodeLimit,
+		)
+		cli.Input(
+			fmt.Sprintf("Cache limit in bytes (DEFAULT %d)", serverConfig.poolConfig.cacheLimit),
+			serverConfig.poolConfig.cacheLimit,
+		)
+		cli.Input(
+			fmt.Sprintf("Maximum idle time until memory cleanup in seconds (DEFAULT %d)", serverConfig.poolConfig.idleThreshold),
+			serverConfig.poolConfig.idleThreshold,
+		)
+
 		return
 
 	case "start":
@@ -264,25 +204,24 @@ func main() {
 			if arguments[1] == "--config" || arguments[1] == "-c" {
 				fmt.Print("")
 			} else {
-				errLog.Printf("Invalid argument or command part '%s'\n", arguments[1])
+				cli.Error(fmt.Sprintf("Invalid argument or command part '%s'", arguments[1]))
 				os.Exit(1)
 			}
 		}
 
 		listener, err := net.Listen("tcp", ":5052")
 		if err != nil {
-			fmt.Println("Error:", err)
+			cli.Error(fmt.Sprintf("Error: %s", err))
 			return
 		}
 		defer listener.Close()
 
-		initMsg := color.New(color.FgGreen).Add(color.Bold)
-		initMsg.Println("Lebre cache server initiated. Listening on port 5052")
+		cli.Launch("Lebre cache server initiated. Listening on port 5052")
 
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				errLog.Println("Error accepting connection:", err)
+				cli.Error(fmt.Sprintf("Error accepting connection: %s", err))
 				continue
 			}
 			go handleClient(conn, cache)
@@ -290,12 +229,13 @@ func main() {
 
 	case "config":
 		if len(arguments) != 3 {
-			errLog.Println("Missing arguments for 'config'\ntype 'lebre help' to see all available commands")
+			cli.Error("Missing arguments for 'config'\ntype 'lebre help' to see all available commands")
 			os.Exit(1)
 		}
 
 	default:
-		errLog.Println("Error: unknown command\ntype 'lebre help' to see all available commands")
+		cli.Error(fmt.Sprintf("Error: unknown command '%s'\n", arguments[0]))
+		cli.Highlight("Type 'lebre help' to see all available commands")
 		os.Exit(1)
 	}
 }
