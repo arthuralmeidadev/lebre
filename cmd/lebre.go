@@ -1,141 +1,44 @@
 package main
 
 import (
-	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"lebre/internal"
-	"net"
 	"os"
-	"strings"
-	"sync"
 )
-
-type Cache struct {
-	data  map[string]string
-	mutex sync.RWMutex
-}
-
-func NewCache() *Cache {
-	return &Cache{
-		data: make(map[string]string),
-	}
-}
-
-func (cache *Cache) Set(key, value string) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-
-	cache.data[key] = value
-}
-
-func (cache *Cache) Get(key string) (string, bool) {
-	cache.mutex.RLock()
-	defer cache.mutex.RUnlock()
-
-	value, ok := cache.data[key]
-	return value, ok
-}
-
-func (cache *Cache) Delete(key string) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-
-	delete(cache.data, key)
-}
-
-func handleClient(conn net.Conn, cache *Cache) {
-	logger := internal.NewCli()
-	defer conn.Close()
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		cmd := scanner.Text()
-		logger.Log(fmt.Sprintf("[LOG]: %s", cmd))
-
-		parts := strings.Fields(cmd)
-
-		if len(parts) == 0 {
-			continue
-		}
-
-		// VERB KEY VALUE?
-		switch parts[0] {
-		case "SET":
-			if len(parts) != 3 {
-				conn.Write([]byte("ERR Wrong number of arguments for SET\n"))
-				continue
-			}
-			cache.Set(parts[1], parts[2])
-			conn.Write([]byte("OK\n"))
-
-		case "GET":
-			if len(parts) != 2 {
-				conn.Write([]byte("ERR Wrong number of arguments for GET\n"))
-				continue
-			}
-			value, ok := cache.Get(parts[1])
-			if ok {
-				conn.Write([]byte(fmt.Sprintf("VALUE %s\n", value)))
-			} else {
-				conn.Write([]byte("NOT_FOUND\n"))
-			}
-
-		case "DELETE":
-			if len(parts) != 2 {
-				conn.Write([]byte("ERR Wrong number of arguments for DELETE\n"))
-				continue
-			}
-			cache.Delete(parts[1])
-			conn.Write([]byte("OK\n"))
-
-		default:
-			conn.Write([]byte("ERR Unknown command\n"))
-		}
-	}
-}
 
 func main() {
 	cli := internal.NewCli()
 	arguments := os.Args[1:]
-	cache := NewCache()
 
 	if len(arguments) == 0 {
-		cli.Help()
+		cli.Help("")
 		return
 	}
 
 	switch arguments[0] {
 	case "help":
-		cli.Help()
+		if len(arguments) != 2 {
+			cli.Help("")
+		} else {
+			cli.Help(arguments[1])
+		}
 		return
 
 	case "init":
-		type PoolConfig struct {
-			maxConns         uint8
-			timeoutThreshold uint16
-			backUpOn         string
-			backUpCycle      uint32
-			nodeLimit        uint32
-			cacheLimit       uint32
-			idleThreshold    uint16
-		}
-
-		type ServerConfig struct {
-			name       string
-			user       string
-			password   string
-			port       uint32
-			poolConfig PoolConfig
-		}
-
-		serverConfig := ServerConfig{
-			port: 5051,
-			poolConfig: PoolConfig{
-				maxConns:         15,
-				timeoutThreshold: 5000,
-				backUpCycle:      300000,
-				nodeLimit:        3500,
-				cacheLimit:       5242880,
-				idleThreshold:    3600,
+		serverConfig := &internal.ServerConfig{
+			Port:             5051,
+			EnableEncryption: true,
+			PoolConfig: &internal.PoolConfig{
+				MaxConns:         15,
+				TimeoutThreshold: 5000,
+				BackupCycle:      300000,
+				TimeToLive:       300,
+				NodeLimit:        3500,
+				CacheLimit:       5242880,
+				IdleThreshold:    3600,
 			},
 		}
 
@@ -143,89 +46,131 @@ func main() {
 
 		cli.Lebre()
 		cli.Highlight("\n Lebre cache server v1.0 running init\n")
-		cli.Input("Server name", &serverConfig.name)
-		cli.Input("User", &serverConfig.user)
-		serverConfig.password = cli.HiddenInput("Password")
+		cli.Input("Server name", &serverConfig.Name)
+		cli.Input("User", &serverConfig.User)
+		serverConfig.Password = cli.HiddenInput("Password")
 		passwordRepeat = cli.HiddenInput("Repeat password")
 
-		for serverConfig.password != passwordRepeat ||
-			len(serverConfig.password) < 8 {
+		for serverConfig.Password != passwordRepeat ||
+			len(serverConfig.Password) < 8 {
 
-			if serverConfig.password != passwordRepeat {
+			if serverConfig.Password != passwordRepeat {
 				cli.Error("Passwords do not match")
 			}
 
-			if len(serverConfig.password) < 8 {
+			if len(serverConfig.Password) < 8 {
 				cli.Error("Password too short")
 			}
 
-			serverConfig.password = cli.HiddenInput("Password")
+			serverConfig.Password = cli.HiddenInput("Password")
 			passwordRepeat = cli.HiddenInput("Repeat password")
 		}
 
 		cli.Input(
-			fmt.Sprintf("Port (DEFAULT %d)", serverConfig.port),
-			&serverConfig.port,
-		)
-		cli.Input(
-			fmt.Sprintf("Maximum number of connections (DEFAULT %d)", serverConfig.poolConfig.maxConns),
-			&serverConfig.poolConfig.maxConns,
-		)
-		cli.Input(
-			fmt.Sprintf("Timout threshold in milliseconds (DEFAULT %d)", serverConfig.poolConfig.timeoutThreshold),
-			serverConfig.poolConfig.timeoutThreshold,
+			fmt.Sprintf("Port (DEFAULT %d)", serverConfig.Port),
+			&serverConfig.Port,
 		)
 
-		cli.Input("Turn on backup? (y(yes) / n(no))", &serverConfig.poolConfig.backUpOn)
-		if serverConfig.poolConfig.backUpOn == "y" {
-			cli.Input(
-				fmt.Sprintf("Backup cycle in milliseconds (DEFAULT %d)", serverConfig.poolConfig.backUpCycle),
-				serverConfig.poolConfig.backUpCycle,
-			)
+		var enableEncryption string
+		cli.Input("Enable encryption (RECOMENDED: YES)? (y(yes) / n(no))", &enableEncryption)
+		if enableEncryption == "n" {
+			serverConfig.EnableEncryption = false
 		}
 
 		cli.Input(
-			fmt.Sprintf("Limit for simultaneous nodes (DEFAULT %d)", serverConfig.poolConfig.nodeLimit),
-			serverConfig.poolConfig.nodeLimit,
+			fmt.Sprintf("Maximum number of connections (DEFAULT %d)", serverConfig.PoolConfig.MaxConns),
+			&serverConfig.PoolConfig.MaxConns,
 		)
 		cli.Input(
-			fmt.Sprintf("Cache limit in bytes (DEFAULT %d)", serverConfig.poolConfig.cacheLimit),
-			serverConfig.poolConfig.cacheLimit,
+			fmt.Sprintf("Timout threshold in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.TimeoutThreshold),
+			serverConfig.PoolConfig.TimeoutThreshold,
+		)
+
+		var backupOn string
+		cli.Input("Turn on backup? (y(yes) / n(no))", &backupOn)
+		if backupOn == "y" {
+			serverConfig.PoolConfig.BackupOn = true
+			cli.Input(
+				fmt.Sprintf("Backup cycle in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.BackupCycle),
+				serverConfig.PoolConfig.BackupCycle,
+			)
+		} else {
+			serverConfig.PoolConfig.BackupOn = false
+		}
+
+		cli.Input(
+			fmt.Sprintf("Cached value lifetime (DEFAULT %d)", serverConfig.PoolConfig.TimeToLive),
+			serverConfig.PoolConfig.TimeToLive,
 		)
 		cli.Input(
-			fmt.Sprintf("Maximum idle time until memory cleanup in seconds (DEFAULT %d)", serverConfig.poolConfig.idleThreshold),
-			serverConfig.poolConfig.idleThreshold,
+			fmt.Sprintf("Limit for simultaneous nodes (DEFAULT %d)", serverConfig.PoolConfig.NodeLimit),
+			serverConfig.PoolConfig.NodeLimit,
 		)
+		cli.Input(
+			fmt.Sprintf("Cache limit in bytes (DEFAULT %d)", serverConfig.PoolConfig.CacheLimit),
+			serverConfig.PoolConfig.CacheLimit,
+		)
+		cli.Input(
+			fmt.Sprintf("Maximum idle time until memory cleanup in seconds (DEFAULT %d)", serverConfig.PoolConfig.IdleThreshold),
+			serverConfig.PoolConfig.IdleThreshold,
+		)
+
+		userHash := sha256.Sum256([]byte(serverConfig.User))
+		serverConfig.User = hex.EncodeToString(userHash[:])
+
+		passwordHash := sha256.Sum256([]byte(serverConfig.Password))
+		serverConfig.Password = hex.EncodeToString(passwordHash[:])
+
+		serverConfigJsonData, err := json.MarshalIndent(serverConfig, "", "    ")
+		if err != nil {
+			fmt.Println("Error marshalling JSON:", err)
+			return
+		}
+
+		err = os.WriteFile("config.json", serverConfigJsonData, 0644)
+		if err != nil {
+			fmt.Println("Error writing JSON to file:", err)
+			return
+		}
 
 		return
 
 	case "start":
 		if len(arguments) == 3 {
 			if arguments[1] == "--config" || arguments[1] == "-c" {
-				fmt.Print("")
+				var serverConfig internal.ServerConfig
+				fileData, err := os.ReadFile(arguments[2])
+				if err != nil {
+					fmt.Println("Error reading JSON file:", err)
+					return
+				}
+				err = json.Unmarshal(fileData, &serverConfig)
+				if err != nil {
+					fmt.Println("Error unmarshalling JSON:", err)
+					return
+				}
+
+				internal.StartServer(&serverConfig)
+
 			} else {
 				cli.Error(fmt.Sprintf("Invalid argument or command part '%s'", arguments[1]))
 				os.Exit(1)
 			}
 		}
 
-		listener, err := net.Listen("tcp", ":5052")
+		var serverConfig internal.ServerConfig
+		fileData, err := os.ReadFile("config.json")
 		if err != nil {
-			cli.Error(fmt.Sprintf("Error: %s", err))
+			fmt.Println("Error reading JSON file:", err)
 			return
 		}
-		defer listener.Close()
-
-		cli.Launch("Lebre cache server initiated. Listening on port 5052")
-
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				cli.Error(fmt.Sprintf("Error accepting connection: %s", err))
-				continue
-			}
-			go handleClient(conn, cache)
+		err = json.Unmarshal(fileData, &serverConfig)
+		if err != nil {
+			fmt.Println("Error unmarshalling JSON:", err)
+			return
 		}
+
+		internal.StartServer(&serverConfig)
 
 	case "config":
 		if len(arguments) != 3 {
