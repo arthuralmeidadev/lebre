@@ -4,35 +4,58 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
-type PoolConfig struct {
-	MaxConns         uint8  `json:"MaxConns"`
-	TimeoutThreshold uint16 `json:"TimeoutThreshold"`
-	BackupOn         bool   `json:"BackUpOn"`
-	BackupCycle      uint32 `json:"BackUpCycle"`
-	TimeToLive       uint16 `json:"TimeToLive"`
-	NodeLimit        uint32 `json:"NodeLimit"`
-	CacheLimit       uint32 `json:"CacheLimit"`
-	IdleThreshold    uint16 `json:"IdleThreshold"`
+type poolConfig struct {
+	// Maximum number of simultaneous connections
+	MaxConns uint8 `json:"maxConns"`
+	// Connection timout threshold in milliseconds
+	TimeoutThreshold uint16 `json:"timeoutThreshold"`
+	// Backup for server downtime
+	BackupOn bool `json:"backUpOn"`
+	// Backup cycle in milliseconds
+	BackupCycle uint32 `json:"backUpCycle"`
+	// Lifetime of a single cache node in milliseconds
+	TimeToLive uint16 `json:"timeToLive"`
+	// Maximum number of simultaneous cache nodes
+	NodeLimit uint32 `json:"nodeLimit"`
+	// Single cache node size maximum limit in bytes
+	NodeSize uint16 `json:"nodeSize"`
+	// Cache size maximum limit in bytes
+	CacheLimit uint32 `json:"cacheLimit"`
+	// Maximum idle time in seconds before memory cleanup
+	IdleThreshold uint16 `json:"idleThreshold"`
 }
 
 type ServerConfig struct {
-	Name             string      `json:"Name"`
-	User             string      `json:"User"`
-	Password         string      `json:"Password"`
-	Port             uint32      `json:"Port"`
-	EnableEncryption bool        `json:"EnableEncryption"`
-	PoolConfig       *PoolConfig `json:"PoolConfig"`
+	Name             string      `json:"name"`
+	User             string      `json:"user"`
+	Password         string      `json:"password"`
+	Port             uint32      `json:"port"`
+	EnableEncryption bool        `json:"enableEncryption"`
+	PoolConfig       *poolConfig `json:"poolConfig"`
 }
 
-type Cache struct {
-	data  map[string]string
-	mutex sync.RWMutex
+type cache struct {
+	Data            map[string]cacheNode `json:"data"`
+	Capacity        uint32               `json:"capacity"`
+	CumulativeBytes uint32               `json:"cumulativeBytes"`
+	NodeTimeToLive  uint16               `json:"nodeTimeToLive"`
+	NodeSize        uint16               `json:"nodeSize"`
+	LimitInBytes    uint32               `json:"limitInBytes"`
+	Mutex           sync.RWMutex         `json:"-"`
+}
+
+type cacheNode struct {
+	Value  string    `json:"value"`
+	Expiry time.Time `json:"expiry"`
 }
 
 type credentials struct {
@@ -40,37 +63,104 @@ type credentials struct {
 	Password string
 }
 
-func newCache() *Cache {
-	return &Cache{
-		data: make(map[string]string),
+func DefaultServerConfig() *ServerConfig {
+	return &ServerConfig{
+		Port:             5051,
+		EnableEncryption: true,
+		PoolConfig: &poolConfig{
+			MaxConns:         15,
+			TimeoutThreshold: 5000,
+			BackupCycle:      300000,
+			TimeToLive:       300,
+			NodeLimit:        3500,
+			NodeSize:         1024,
+			CacheLimit:       5242880,
+			IdleThreshold:    3600,
+		},
 	}
 }
 
-func (cache *Cache) Set(key, value string) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-
-	cache.data[key] = value
+func newCache(
+	capacity uint32,
+	limitInBytes uint32,
+	nodeTimeToLive uint16,
+	nodeSize uint16,
+) *cache {
+	return &cache{
+		Data:            make(map[string]cacheNode),
+		Capacity:        capacity,
+		CumulativeBytes: 0,
+		NodeTimeToLive:  nodeTimeToLive,
+		NodeSize:        nodeSize,
+		LimitInBytes:    limitInBytes,
+	}
 }
 
-func (cache *Cache) Get(key string) (string, bool) {
-	cache.mutex.RLock()
-	defer cache.mutex.RUnlock()
+func (cache *cache) Set(key, value string) error {
+	now := time.Now()
+	cacheNode := cacheNode{
+		Value:  value,
+		Expiry: now.Add(300 * time.Second),
+	}
 
-	value, ok := cache.data[key]
-	return value, ok
+	incomingDataByteSize := len(key) + len(value)
+
+	if incomingDataByteSize > int(cache.NodeSize) {
+		return fmt.Errorf("node byte limit exceeded. Max is: %d", cache.NodeSize)
+	}
+
+	if incomingDataByteSize+int(cache.CumulativeBytes) > int(cache.LimitInBytes) {
+		return fmt.Errorf("cache byte limit exceeded. Max is: %d", cache.LimitInBytes)
+	} else {
+		cache.CumulativeBytes = uint32(incomingDataByteSize) + cache.CumulativeBytes
+	}
+
+	cache.Mutex.Lock()
+	defer cache.Mutex.Unlock()
+
+	delete(cache.Data, key)
+	cache.Data[key] = cacheNode
+
+	if len(cache.Data) > int(cache.Capacity) {
+		for keyToBeDeleted := range cache.Data {
+			delete(cache.Data, keyToBeDeleted)
+			break
+		}
+	}
+	return nil
 }
 
-func (cache *Cache) Delete(key string) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
+func (cache *cache) Get(key string) (string, bool) {
+	cache.Mutex.RLock()
+	defer cache.Mutex.RUnlock()
 
-	delete(cache.data, key)
+	node, ok := cache.Data[key]
+
+	if node.Expiry.After(time.Now()) {
+		delete(cache.Data, key)
+		return "", true
+	}
+
+	return node.Value, ok
 }
 
-func handleClient(conn net.Conn, cache *Cache, credentials *credentials) {
+func (cache *cache) Delete(key string) {
+	cache.Mutex.Lock()
+	defer cache.Mutex.Unlock()
+
+	delete(cache.Data, key)
+}
+
+func handleClient(
+	conn net.Conn,
+	cache *cache,
+	credentials *credentials,
+	semaphore chan struct{},
+) {
+	defer func() { <-semaphore }()
 	defer conn.Close()
 
+	semaphore <- struct{}{}
 	logger := NewCli()
 	scanner := bufio.NewScanner(conn)
 
@@ -84,11 +174,10 @@ func handleClient(conn net.Conn, cache *Cache, credentials *credentials) {
 			continue
 		}
 
-		// VERB KEY VALUE?
 		switch parts[0] {
 		case "AUTH":
 			if len(parts) != 3 {
-				conn.Write([]byte("ERR Wrong number of arguments for AUTH\n"))
+				conn.Write([]byte("ERR wrong number of arguments for AUTH\n"))
 				continue
 			}
 
@@ -99,21 +188,25 @@ func handleClient(conn net.Conn, cache *Cache, credentials *credentials) {
 
 			if credentials.User != incomingUserHashString ||
 				credentials.Password != incomingPasswordHashString {
-				conn.Write([]byte("ERR Authentication faild\n"))
+				conn.Write([]byte("ERR authentication faild\n"))
 				continue
 			}
 
 		case "SET":
 			if len(parts) != 3 {
-				conn.Write([]byte("ERR Wrong number of arguments for SET\n"))
+				conn.Write([]byte("ERR wrong number of arguments for SET\n"))
 				continue
 			}
-			cache.Set(parts[1], parts[2])
+			err := cache.Set(parts[1], parts[2])
+			if err != nil {
+				conn.Write([]byte(fmt.Sprintf("ERR %s\n", err)))
+				continue
+			}
 			conn.Write([]byte("OK\n"))
 
 		case "GET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR Wrong number of arguments for GET\n"))
+				conn.Write([]byte("ERR wrong number of arguments for GET\n"))
 				continue
 			}
 			value, ok := cache.Get(parts[1])
@@ -125,20 +218,64 @@ func handleClient(conn net.Conn, cache *Cache, credentials *credentials) {
 
 		case "DELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR Wrong number of arguments for DELETE\n"))
+				conn.Write([]byte("ERR wrong number of arguments for DELETE\n"))
 				continue
 			}
 			cache.Delete(parts[1])
 			conn.Write([]byte("OK\n"))
 
 		default:
-			conn.Write([]byte("ERR Unknown command\n"))
+			conn.Write([]byte("ERR unknown verb\n"))
 		}
 	}
 }
 
+func backup(cache *cache) {
+	cacheData, err := json.MarshalIndent(cache, "", "    ")
+	if err != nil {
+		fmt.Println("Error marshalling JSON: ", err)
+		return
+	}
+
+	err = os.WriteFile("backup.json", cacheData, 0644)
+	if err != nil {
+		fmt.Println("Error writing JSON to file: ", err)
+		return
+	}
+}
+
+func readFromBackup(cache *cache, backupOn bool) error {
+	if backupOn {
+		fileData, err := os.ReadFile("backup.json")
+		if err != nil {
+			fmt.Println("Error reading JSON file: ", err)
+			return err
+		}
+		err = json.Unmarshal(fileData, &cache)
+		if err != nil {
+			fmt.Println("Error unmarshalling JSON: ", err)
+			return err
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("backup is off")
+}
+
 func StartServer(serverConfig *ServerConfig) {
-	cache := newCache()
+	var cache *cache
+
+	err := readFromBackup(cache, serverConfig.PoolConfig.BackupOn)
+	if err != nil {
+		cache = newCache(
+			serverConfig.PoolConfig.NodeLimit,
+			serverConfig.PoolConfig.CacheLimit,
+			serverConfig.PoolConfig.TimeToLive,
+			serverConfig.PoolConfig.NodeSize,
+		)
+	}
+
 	cli := NewCli()
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", serverConfig.Port))
 	if err != nil {
@@ -147,19 +284,24 @@ func StartServer(serverConfig *ServerConfig) {
 	}
 	defer listener.Close()
 
-	cli.Launch(fmt.Sprintf("Lebre cache server initiated. Listening on port %d", serverConfig.Port))
-
 	serverCredentials := &credentials{
 		User:     serverConfig.User,
 		Password: serverConfig.Password,
 	}
+	semaphore := make(chan struct{}, serverConfig.PoolConfig.MaxConns)
 
+	if serverConfig.PoolConfig.BackupOn {
+		interval := time.Duration(serverConfig.PoolConfig.BackupCycle) * time.Millisecond
+		go Interval(interval, func() { backup(cache) })
+	}
+
+	cli.Launch(fmt.Sprintf("Lebre cache server initiated. Listening on port %d", serverConfig.Port))
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			cli.Error(fmt.Sprintf("Error accepting connection: %s", err))
 			continue
 		}
-		go handleClient(conn, cache, serverCredentials)
+		go handleClient(conn, cache, serverCredentials, semaphore)
 	}
 }

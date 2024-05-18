@@ -28,20 +28,7 @@ func main() {
 		return
 
 	case "init":
-		serverConfig := &internal.ServerConfig{
-			Port:             5051,
-			EnableEncryption: true,
-			PoolConfig: &internal.PoolConfig{
-				MaxConns:         15,
-				TimeoutThreshold: 5000,
-				BackupCycle:      300000,
-				TimeToLive:       300,
-				NodeLimit:        3500,
-				CacheLimit:       5242880,
-				IdleThreshold:    3600,
-			},
-		}
-
+		serverConfig := internal.DefaultServerConfig()
 		var passwordRepeat string
 
 		cli.Lebre()
@@ -78,11 +65,11 @@ func main() {
 		}
 
 		cli.Input(
-			fmt.Sprintf("Maximum number of connections (DEFAULT %d)", serverConfig.PoolConfig.MaxConns),
+			fmt.Sprintf("Maximum number of simultaneous connections (DEFAULT %d)", serverConfig.PoolConfig.MaxConns),
 			&serverConfig.PoolConfig.MaxConns,
 		)
 		cli.Input(
-			fmt.Sprintf("Timout threshold in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.TimeoutThreshold),
+			fmt.Sprintf("Connection timout threshold in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.TimeoutThreshold),
 			serverConfig.PoolConfig.TimeoutThreshold,
 		)
 
@@ -99,7 +86,7 @@ func main() {
 		}
 
 		cli.Input(
-			fmt.Sprintf("Cached value lifetime (DEFAULT %d)", serverConfig.PoolConfig.TimeToLive),
+			fmt.Sprintf("Cached value lifetime in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.TimeToLive),
 			serverConfig.PoolConfig.TimeToLive,
 		)
 		cli.Input(
@@ -107,11 +94,15 @@ func main() {
 			serverConfig.PoolConfig.NodeLimit,
 		)
 		cli.Input(
+			fmt.Sprintf("single cache node size maximum limit in bytes (DEFAULT %d)", serverConfig.PoolConfig.NodeSize),
+			serverConfig.PoolConfig.NodeSize,
+		)
+		cli.Input(
 			fmt.Sprintf("Cache limit in bytes (DEFAULT %d)", serverConfig.PoolConfig.CacheLimit),
 			serverConfig.PoolConfig.CacheLimit,
 		)
 		cli.Input(
-			fmt.Sprintf("Maximum idle time until memory cleanup in seconds (DEFAULT %d)", serverConfig.PoolConfig.IdleThreshold),
+			fmt.Sprintf("Maximum idle time in seconds before memory cleanup (DEFAULT %d)", serverConfig.PoolConfig.IdleThreshold),
 			serverConfig.PoolConfig.IdleThreshold,
 		)
 
@@ -129,7 +120,7 @@ func main() {
 
 		err = os.WriteFile("config.json", serverConfigJsonData, 0644)
 		if err != nil {
-			fmt.Println("Error writing JSON to file:", err)
+			fmt.Println("Error writing JSON to file: ", err)
 			return
 		}
 
@@ -141,12 +132,12 @@ func main() {
 				var serverConfig internal.ServerConfig
 				fileData, err := os.ReadFile(arguments[2])
 				if err != nil {
-					fmt.Println("Error reading JSON file:", err)
+					fmt.Println("Error reading JSON file: ", err)
 					return
 				}
 				err = json.Unmarshal(fileData, &serverConfig)
 				if err != nil {
-					fmt.Println("Error unmarshalling JSON:", err)
+					fmt.Println("Error unmarshalling JSON: ", err)
 					return
 				}
 
@@ -161,12 +152,12 @@ func main() {
 		var serverConfig internal.ServerConfig
 		fileData, err := os.ReadFile("config.json")
 		if err != nil {
-			fmt.Println("Error reading JSON file:", err)
+			fmt.Println("Error reading JSON file: ", err)
 			return
 		}
 		err = json.Unmarshal(fileData, &serverConfig)
 		if err != nil {
-			fmt.Println("Error unmarshalling JSON:", err)
+			fmt.Println("Error unmarshalling JSON: ", err)
 			return
 		}
 
@@ -183,4 +174,6 @@ func main() {
 		cli.Highlight("Type 'lebre help' to see all available commands")
 		os.Exit(1)
 	}
+
+	select {}
 }
