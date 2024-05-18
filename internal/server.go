@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bufio"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -61,6 +62,48 @@ type cacheNode struct {
 type credentials struct {
 	User     string
 	Password string
+}
+
+type client struct {
+	serverPublicKey *rsa.PublicKey
+	clientPublicKey *rsa.PublicKey
+	privateKey      *rsa.PrivateKey
+	logger          *Cli
+	conn            net.Conn
+}
+
+func (client *client) respond(data string) {
+	encryptedResponse, err := RSAEncrypt([]byte(data+"\n"), client.serverPublicKey)
+	if err != nil {
+		fmt.Println("Error encrypting: ", err)
+		return
+	}
+
+	_, err = client.conn.Write(encryptedResponse)
+	if err != nil {
+		client.logger.ErrLog.Println("ERR couldn't write back to client")
+	}
+}
+
+func (client *client) negotiate() {
+	_, err := client.conn.Write([]byte(fmt.Sprintf("PUBKEY %s", client.clientPublicKey.N.String())))
+	if err != nil {
+		client.logger.ErrLog.Println("ERR couldn't send public key to client")
+	}
+
+	buffer := make([]byte, 1024)
+	n, err := client.conn.Read(buffer)
+	if err != nil {
+		return
+	}
+
+	var clientPublicKey rsa.PublicKey
+	err = json.Unmarshal(buffer[:n], &clientPublicKey)
+	if err != nil {
+		return
+	}
+
+	client.clientPublicKey = &clientPublicKey
 }
 
 func DefaultServerConfig() *ServerConfig {
@@ -163,9 +206,24 @@ func handleClient(
 	semaphore <- struct{}{}
 	logger := NewCli()
 	scanner := bufio.NewScanner(conn)
+	privateKey, publicKey, err := GenerateRSAKeyPair()
+	if err != nil {
+		fmt.Println("Error generating RSA key pair:", err)
+		return
+	}
+
+	client := &client{
+		serverPublicKey: publicKey,
+		privateKey:      privateKey,
+		logger:          NewCli(),
+		conn:            conn,
+	}
+
+	client.negotiate()
 
 	for scanner.Scan() {
 		cmd := scanner.Text()
+
 		logger.Log(fmt.Sprintf("[LOG]: %s", cmd))
 
 		parts := strings.Fields(cmd)
@@ -177,7 +235,7 @@ func handleClient(
 		switch parts[0] {
 		case "AUTH":
 			if len(parts) != 3 {
-				conn.Write([]byte("ERR wrong number of arguments for AUTH\n"))
+				client.respond("ERR wrong number of arguments for AUTH")
 				continue
 			}
 
@@ -188,44 +246,47 @@ func handleClient(
 
 			if credentials.User != incomingUserHashString ||
 				credentials.Password != incomingPasswordHashString {
-				conn.Write([]byte("ERR authentication faild\n"))
+				client.respond("ERR authentication faild")
 				continue
 			}
 
 		case "SET":
 			if len(parts) != 3 {
-				conn.Write([]byte("ERR wrong number of arguments for SET\n"))
+				client.respond("ERR wrong number of arguments for SET")
 				continue
 			}
 			err := cache.Set(parts[1], parts[2])
 			if err != nil {
-				conn.Write([]byte(fmt.Sprintf("ERR %s\n", err)))
+				client.respond(fmt.Sprintf("ERR %s", err))
 				continue
 			}
-			conn.Write([]byte("OK\n"))
+			_, err = conn.Write([]byte("OK\n"))
+			if err != nil {
+				logger.ErrLog.Println("ERR couldn't write back to client")
+			}
 
 		case "GET":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR wrong number of arguments for GET\n"))
+				client.respond("ERR wrong number of arguments for GET")
 				continue
 			}
 			value, ok := cache.Get(parts[1])
 			if ok {
-				conn.Write([]byte(fmt.Sprintf("VALUE %s\n", value)))
+				client.respond(fmt.Sprintf("VALUE %s", value))
 			} else {
-				conn.Write([]byte("NOT_FOUND\n"))
+				client.respond("NOT_FOUND")
 			}
 
 		case "DELETE":
 			if len(parts) != 2 {
-				conn.Write([]byte("ERR wrong number of arguments for DELETE\n"))
+				client.respond("ERR wrong number of arguments for DELETE")
 				continue
 			}
 			cache.Delete(parts[1])
-			conn.Write([]byte("OK\n"))
+			client.respond("OK")
 
 		default:
-			conn.Write([]byte("ERR unknown verb\n"))
+			client.respond("ERR unknown verb")
 		}
 	}
 }
@@ -296,6 +357,7 @@ func StartServer(serverConfig *ServerConfig) {
 	}
 
 	cli.Launch(fmt.Sprintf("Lebre cache server initiated. Listening on port %d", serverConfig.Port))
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
