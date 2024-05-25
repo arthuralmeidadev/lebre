@@ -1,0 +1,18 @@
+{
+    "name": "TestServer",
+    "user": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+    "password": "11aec05dc27d2cb7ff954b0f0bdfe12c09d35da1059307d38bfa404b819b4ec3",
+    "port": 5051,
+    "enableEncryption": true,
+    "poolConfig": {
+        "maxConns": 15,
+        "timeoutThreshold": 5000,
+        "backUpOn": false,
+        "backUpCycle": 300000,
+        "timeToLive": 300,
+        "nodeLimit": 3500,
+        "nodeSize": 1024,
+        "cacheLimit": 5242880,
+        "idleThreshold": 3600
+    }
+}

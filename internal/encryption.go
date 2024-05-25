@@ -3,7 +3,10 @@ package internal
 import (
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
 )
 
 func GenerateRSAKeyPair() (*rsa.PrivateKey, *rsa.PublicKey, error) {
@@ -15,7 +18,7 @@ func GenerateRSAKeyPair() (*rsa.PrivateKey, *rsa.PublicKey, error) {
 }
 
 func RSAEncrypt(data []byte, publicKey *rsa.PublicKey) ([]byte, error) {
-	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, data, nil)
+	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, data)
 	if err != nil {
 		return nil, err
 	}
@@ -23,9 +26,42 @@ func RSAEncrypt(data []byte, publicKey *rsa.PublicKey) ([]byte, error) {
 }
 
 func RSADecrypt(ciphertext []byte, privateKey *rsa.PrivateKey) ([]byte, error) {
-	data, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, ciphertext, nil)
+	data, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, ciphertext)
 	if err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+
+func PublicKeyToPEM(publicKey *rsa.PublicKey) ([]byte, error) {
+	publicKeyASN1, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	pemBlock := &pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: publicKeyASN1,
+	}
+
+	return pem.EncodeToMemory(pemBlock), nil
+}
+
+func PEMToPublicKey(pemData string) (*rsa.PublicKey, error) {
+	pemBlock, _ := pem.Decode([]byte(pemData))
+	if pemBlock == nil || pemBlock.Type != "PUBLIC KEY" {
+		return nil, errors.New("failed to decode PEM block containing public key")
+	}
+
+	publicKey, err := x509.ParsePKIXPublicKey(pemBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	switch publicKey := publicKey.(type) {
+	case *rsa.PublicKey:
+		return publicKey, nil
+	default:
+		return nil, fmt.Errorf("not an RSA public key")
+	}
 }

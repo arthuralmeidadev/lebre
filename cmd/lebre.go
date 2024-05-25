@@ -127,21 +127,22 @@ func main() {
 		return
 
 	case "start":
+		server := &internal.LebreServer{}
+
 		if len(arguments) == 3 {
 			if arguments[1] == "--config" || arguments[1] == "-c" {
-				var serverConfig internal.ServerConfig
 				fileData, err := os.ReadFile(arguments[2])
 				if err != nil {
 					fmt.Println("Error reading JSON file: ", err)
 					return
 				}
-				err = json.Unmarshal(fileData, &serverConfig)
+				err = json.Unmarshal(fileData, &server.ServerConfig)
 				if err != nil {
 					fmt.Println("Error unmarshalling JSON: ", err)
 					return
 				}
 
-				internal.StartServer(&serverConfig)
+				server.Start()
 
 			} else {
 				cli.Error(fmt.Sprintf("Invalid argument or command part '%s'", arguments[1]))
@@ -149,19 +150,19 @@ func main() {
 			}
 		}
 
-		var serverConfig internal.ServerConfig
 		fileData, err := os.ReadFile("config.json")
 		if err != nil {
 			fmt.Println("Error reading JSON file: ", err)
 			return
 		}
-		err = json.Unmarshal(fileData, &serverConfig)
+
+		err = json.Unmarshal(fileData, &server.ServerConfig)
 		if err != nil {
 			fmt.Println("Error unmarshalling JSON: ", err)
 			return
 		}
 
-		internal.StartServer(&serverConfig)
+		server.Start()
 
 	case "config":
 		if len(arguments) != 3 {

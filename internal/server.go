@@ -2,15 +2,16 @@ package internal
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -29,7 +30,7 @@ type poolConfig struct {
 	NodeLimit uint32 `json:"nodeLimit"`
 	// Single cache node size maximum limit in bytes
 	NodeSize uint16 `json:"nodeSize"`
-	// Cache size maximum limit in bytes
+	// cache size maximum limit in bytes
 	CacheLimit uint32 `json:"cacheLimit"`
 	// Maximum idle time in seconds before memory cleanup
 	IdleThreshold uint16 `json:"idleThreshold"`
@@ -44,66 +45,22 @@ type ServerConfig struct {
 	PoolConfig       *poolConfig `json:"poolConfig"`
 }
 
-type cache struct {
-	Data            map[string]cacheNode `json:"data"`
-	Capacity        uint32               `json:"capacity"`
-	CumulativeBytes uint32               `json:"cumulativeBytes"`
-	NodeTimeToLive  uint16               `json:"nodeTimeToLive"`
-	NodeSize        uint16               `json:"nodeSize"`
-	LimitInBytes    uint32               `json:"limitInBytes"`
-	Mutex           sync.RWMutex         `json:"-"`
-}
-
-type cacheNode struct {
-	Value  string    `json:"value"`
-	Expiry time.Time `json:"expiry"`
-}
-
 type credentials struct {
 	User     string
 	Password string
 }
 
-type client struct {
-	serverPublicKey *rsa.PublicKey
-	clientPublicKey *rsa.PublicKey
-	privateKey      *rsa.PrivateKey
-	logger          *Cli
-	conn            net.Conn
+type socket struct {
+	serverPublicKey  *rsa.PublicKey
+	serverPrivateKey *rsa.PrivateKey
+	logger           *Cli
+	conn             net.Conn
 }
 
-func (client *client) respond(data string) {
-	encryptedResponse, err := RSAEncrypt([]byte(data+"\n"), client.serverPublicKey)
-	if err != nil {
-		fmt.Println("Error encrypting: ", err)
-		return
-	}
-
-	_, err = client.conn.Write(encryptedResponse)
-	if err != nil {
-		client.logger.ErrLog.Println("ERR couldn't write back to client")
-	}
-}
-
-func (client *client) negotiate() {
-	_, err := client.conn.Write([]byte(fmt.Sprintf("PUBKEY %s", client.clientPublicKey.N.String())))
-	if err != nil {
-		client.logger.ErrLog.Println("ERR couldn't send public key to client")
-	}
-
-	buffer := make([]byte, 1024)
-	n, err := client.conn.Read(buffer)
-	if err != nil {
-		return
-	}
-
-	var clientPublicKey rsa.PublicKey
-	err = json.Unmarshal(buffer[:n], &clientPublicKey)
-	if err != nil {
-		return
-	}
-
-	client.clientPublicKey = &clientPublicKey
+type LebreServer struct {
+	ServerConfig ServerConfig
+	credentials  *credentials
+	cache        cache
 }
 
 func DefaultServerConfig() *ServerConfig {
@@ -123,176 +80,106 @@ func DefaultServerConfig() *ServerConfig {
 	}
 }
 
-func newCache(
-	capacity uint32,
-	limitInBytes uint32,
-	nodeTimeToLive uint16,
-	nodeSize uint16,
-) *cache {
-	return &cache{
-		Data:            make(map[string]cacheNode),
-		Capacity:        capacity,
-		CumulativeBytes: 0,
-		NodeTimeToLive:  nodeTimeToLive,
-		NodeSize:        nodeSize,
-		LimitInBytes:    limitInBytes,
+func (socket *socket) getRequestParts(data string) ([]string, error) {
+	decryptedData, err := RSADecrypt([]byte(data), socket.serverPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return strings.Fields(string(decryptedData)), nil
+
+}
+
+func (socket *socket) sendMessage(data []byte) error {
+	var buffer bytes.Buffer
+
+	err := binary.Write(&buffer, binary.BigEndian, uint32(len(data)))
+	if err != nil {
+		socket.logger.ErrLog.Printf("ERR couldn't append data length to chunk: %s\n", err)
+		return err
+	}
+
+	// write public key to buffer
+	_, err = buffer.Write(data)
+	if err != nil {
+		socket.logger.ErrLog.Println("ERR couldn't write data to buffer")
+		return err
+	}
+
+	// send buffer bytes to the connection
+	_, err = socket.conn.Write(buffer.Bytes())
+	if err != nil {
+		socket.logger.ErrLog.Println("ERR couldn't flush data from buffer to client")
+		return err
+	}
+
+	buffer.Reset()
+	return nil
+}
+
+func (socket *socket) respond(data string) {
+	encryptedResponse, err := RSAEncrypt([]byte(data), socket.serverPublicKey)
+	if err != nil {
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error encrypting response: %s", err))
+		return
+	}
+
+	err = socket.sendMessage(encryptedResponse)
+	if err != nil {
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s", err))
+		return
 	}
 }
 
-func (cache *cache) Set(key, value string) error {
-	now := time.Now()
-	cacheNode := cacheNode{
-		Value:  value,
-		Expiry: now.Add(300 * time.Second),
+func (socket *socket) negotiate() error {
+	// receive server public key
+	readerBuffer := make([]byte, 1024)
+	_, err := socket.conn.Read(readerBuffer)
+	if err != nil {
+		socket.logger.ErrLog.Printf("ERR couldn't read server public key from connection: %s\n", err)
+		return err
 	}
 
-	incomingDataByteSize := len(key) + len(value)
-
-	if incomingDataByteSize > int(cache.NodeSize) {
-		return fmt.Errorf("node byte limit exceeded. Max is: %d", cache.NodeSize)
+	var serverPublicKey *rsa.PublicKey
+	serverPublicKey, err = PEMToPublicKey(strings.TrimSpace(string(readerBuffer)))
+	if err != nil {
+		socket.logger.ErrLog.Printf("ERR couldn't parse server pem public key: %s\n", err)
+		return err
+	}
+	socket.serverPublicKey = serverPublicKey
+	err = socket.sendMessage([]byte("SERVER RECEIVED KEY"))
+	if err != nil {
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s", err))
+		return err
 	}
 
-	if incomingDataByteSize+int(cache.CumulativeBytes) > int(cache.LimitInBytes) {
-		return fmt.Errorf("cache byte limit exceeded. Max is: %d", cache.LimitInBytes)
-	} else {
-		cache.CumulativeBytes = uint32(incomingDataByteSize) + cache.CumulativeBytes
+	publicKey, err := PublicKeyToPEM(&socket.serverPrivateKey.PublicKey)
+	if err != nil {
+		socket.logger.ErrLog.Printf("ERR attempt to encode client public key failed: %s\n", err)
+		return err
 	}
 
-	cache.Mutex.Lock()
-	defer cache.Mutex.Unlock()
-
-	delete(cache.Data, key)
-	cache.Data[key] = cacheNode
-
-	if len(cache.Data) > int(cache.Capacity) {
-		for keyToBeDeleted := range cache.Data {
-			delete(cache.Data, keyToBeDeleted)
-			break
-		}
+	err = socket.sendMessage(publicKey)
+	if err != nil {
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending client public key: %s", err))
+		return err
 	}
 	return nil
 }
 
-func (cache *cache) Get(key string) (string, bool) {
-	cache.Mutex.RLock()
-	defer cache.Mutex.RUnlock()
-
-	node, ok := cache.Data[key]
-
-	if node.Expiry.After(time.Now()) {
-		delete(cache.Data, key)
-		return "", true
-	}
-
-	return node.Value, ok
-}
-
-func (cache *cache) Delete(key string) {
-	cache.Mutex.Lock()
-	defer cache.Mutex.Unlock()
-
-	delete(cache.Data, key)
-}
-
-func handleClient(
-	conn net.Conn,
-	cache *cache,
-	credentials *credentials,
-	semaphore chan struct{},
-) {
-	defer func() { <-semaphore }()
-	defer conn.Close()
-
-	semaphore <- struct{}{}
-	logger := NewCli()
-	scanner := bufio.NewScanner(conn)
-	privateKey, publicKey, err := GenerateRSAKeyPair()
-	if err != nil {
-		fmt.Println("Error generating RSA key pair:", err)
-		return
-	}
-
-	client := &client{
-		serverPublicKey: publicKey,
-		privateKey:      privateKey,
-		logger:          NewCli(),
-		conn:            conn,
-	}
-
-	client.negotiate()
-
-	for scanner.Scan() {
-		cmd := scanner.Text()
-
-		logger.Log(fmt.Sprintf("[LOG]: %s", cmd))
-
-		parts := strings.Fields(cmd)
-
-		if len(parts) == 0 {
-			continue
-		}
-
-		switch parts[0] {
-		case "AUTH":
-			if len(parts) != 3 {
-				client.respond("ERR wrong number of arguments for AUTH")
-				continue
-			}
-
-			incomingUserHash := sha256.Sum256([]byte(parts[1]))
-			incomingPasswordHash := sha256.Sum256([]byte(parts[2]))
-			incomingUserHashString := hex.EncodeToString(incomingUserHash[:])
-			incomingPasswordHashString := hex.EncodeToString(incomingPasswordHash[:])
-
-			if credentials.User != incomingUserHashString ||
-				credentials.Password != incomingPasswordHashString {
-				client.respond("ERR authentication faild")
-				continue
-			}
-
-		case "SET":
-			if len(parts) != 3 {
-				client.respond("ERR wrong number of arguments for SET")
-				continue
-			}
-			err := cache.Set(parts[1], parts[2])
-			if err != nil {
-				client.respond(fmt.Sprintf("ERR %s", err))
-				continue
-			}
-			_, err = conn.Write([]byte("OK\n"))
-			if err != nil {
-				logger.ErrLog.Println("ERR couldn't write back to client")
-			}
-
-		case "GET":
-			if len(parts) != 2 {
-				client.respond("ERR wrong number of arguments for GET")
-				continue
-			}
-			value, ok := cache.Get(parts[1])
-			if ok {
-				client.respond(fmt.Sprintf("VALUE %s", value))
-			} else {
-				client.respond("NOT_FOUND")
-			}
-
-		case "DELETE":
-			if len(parts) != 2 {
-				client.respond("ERR wrong number of arguments for DELETE")
-				continue
-			}
-			cache.Delete(parts[1])
-			client.respond("OK")
-
-		default:
-			client.respond("ERR unknown verb")
-		}
+func (lebreServer *LebreServer) newCache() {
+	lebreServer.cache = cache{
+		Data:            make(map[string]cacheNode),
+		Capacity:        lebreServer.cache.Capacity,
+		CumulativeBytes: 0,
+		NodeTimeToLive:  lebreServer.cache.NodeTimeToLive,
+		NodeSize:        lebreServer.cache.NodeSize,
+		LimitInBytes:    lebreServer.cache.LimitInBytes,
 	}
 }
 
-func backup(cache *cache) {
-	cacheData, err := json.MarshalIndent(cache, "", "    ")
+func (lebreServer *LebreServer) backup() {
+	cacheData, err := json.MarshalIndent(lebreServer.cache, "", "    ")
 	if err != nil {
 		fmt.Println("Error marshalling JSON: ", err)
 		return
@@ -305,14 +192,14 @@ func backup(cache *cache) {
 	}
 }
 
-func readFromBackup(cache *cache, backupOn bool) error {
-	if backupOn {
+func (lebreServer *LebreServer) readFromBackup() error {
+	if lebreServer.ServerConfig.PoolConfig.BackupOn {
 		fileData, err := os.ReadFile("backup.json")
 		if err != nil {
 			fmt.Println("Error reading JSON file: ", err)
 			return err
 		}
-		err = json.Unmarshal(fileData, &cache)
+		err = json.Unmarshal(fileData, lebreServer.cache)
 		if err != nil {
 			fmt.Println("Error unmarshalling JSON: ", err)
 			return err
@@ -324,39 +211,162 @@ func readFromBackup(cache *cache, backupOn bool) error {
 	return fmt.Errorf("backup is off")
 }
 
-func StartServer(serverConfig *ServerConfig) {
-	var cache *cache
+func (lebreServer *LebreServer) handleConnection(
+	conn net.Conn,
+	semaphore chan struct{},
+) {
+	defer func() { <-semaphore }()
+	defer conn.Close()
 
-	err := readFromBackup(cache, serverConfig.PoolConfig.BackupOn)
+	authorized := false
+	semaphore <- struct{}{}
+	logger := NewCli()
+	serverPrivateKey, _, err := GenerateRSAKeyPair()
 	if err != nil {
-		cache = newCache(
-			serverConfig.PoolConfig.NodeLimit,
-			serverConfig.PoolConfig.CacheLimit,
-			serverConfig.PoolConfig.TimeToLive,
-			serverConfig.PoolConfig.NodeSize,
-		)
+		fmt.Println("Error generating RSA key pair:", err)
+		conn.Close()
+		return
+	}
+
+	socket := &socket{
+		serverPrivateKey: serverPrivateKey,
+		logger:           NewCli(),
+		conn:             conn,
+	}
+
+	err = socket.negotiate()
+	if err != nil {
+		conn.Close()
+		return
+	}
+
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		cmd := scanner.Text()
+		parts, err := socket.getRequestParts(cmd)
+
+		if err != nil {
+			logger.ErrLog.Printf("Error while getting request parts: %s\n", err)
+			conn.Close()
+			return
+		}
+
+		if len(parts) == 0 {
+			continue
+		}
+
+		if parts[0] == "AUTH" {
+			password := sha256.Sum256([]byte(parts[1]))
+			logger.Log(fmt.Sprintf("[REQUEST]: AUTH %s %x", parts[1], password))
+		} else {
+			logger.Log(fmt.Sprintf("[REQUEST]: %s", strings.Join(parts, " ")))
+		}
+
+		switch parts[0] {
+		case "AUTH":
+			if len(parts) != 3 {
+				socket.respond("ERR wrong number of arguments for AUTH")
+				continue
+			}
+
+			incomingUserHash := sha256.Sum256([]byte(parts[1]))
+			incomingPasswordHash := sha256.Sum256([]byte(parts[2]))
+			incomingUserHashString := hex.EncodeToString(incomingUserHash[:])
+			incomingPasswordHashString := hex.EncodeToString(incomingPasswordHash[:])
+
+			if lebreServer.credentials.User != incomingUserHashString ||
+				lebreServer.credentials.Password != incomingPasswordHashString {
+				socket.respond("ERR authentication faild")
+				continue
+			}
+
+			logger.Log(fmt.Sprintf("[LOG]: Authenticated with user: %s\n", parts[1]))
+
+			authorized = true
+
+		case "SET":
+			if !authorized {
+				socket.respond("ERR unauthorized")
+				continue
+			}
+			if len(parts) != 3 {
+				socket.respond("ERR wrong number of arguments for SET")
+				continue
+			}
+			err := lebreServer.cache.Set(parts[1], parts[2])
+			if err != nil {
+				socket.respond(fmt.Sprintf("ERR %s", err))
+				continue
+			}
+			_, err = conn.Write([]byte("OK\n"))
+			if err != nil {
+				logger.ErrLog.Println("ERR couldn't write back to socket")
+			}
+
+		case "GET":
+			if !authorized {
+				socket.respond("ERR unauthorized")
+				continue
+			}
+			if len(parts) != 2 {
+				socket.respond("ERR wrong number of arguments for GET")
+				continue
+			}
+			value, ok := lebreServer.cache.Get(parts[1])
+			if ok {
+				socket.respond(fmt.Sprintf("VALUE %s", value))
+			} else {
+				socket.respond("NOT_FOUND")
+			}
+
+		case "DELETE":
+			if !authorized {
+				socket.respond("ERR unauthorized")
+				continue
+			}
+			if len(parts) != 2 {
+				socket.respond("ERR wrong number of arguments for DELETE")
+				continue
+			}
+			lebreServer.cache.Delete(parts[1])
+			socket.respond("OK")
+
+		default:
+			if !authorized {
+				socket.respond("ERR unauthorized")
+				continue
+			}
+			socket.respond("ERR unknown verb")
+		}
+	}
+}
+
+func (lebreServer *LebreServer) Start() {
+	err := lebreServer.readFromBackup()
+	if err != nil {
+		lebreServer.newCache()
 	}
 
 	cli := NewCli()
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", serverConfig.Port))
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", lebreServer.ServerConfig.Port))
 	if err != nil {
 		cli.Error(fmt.Sprintf("Error: %s", err))
 		return
 	}
 	defer listener.Close()
 
-	serverCredentials := &credentials{
-		User:     serverConfig.User,
-		Password: serverConfig.Password,
+	lebreServer.credentials = &credentials{
+		User:     lebreServer.ServerConfig.User,
+		Password: lebreServer.ServerConfig.Password,
 	}
-	semaphore := make(chan struct{}, serverConfig.PoolConfig.MaxConns)
+	semaphore := make(chan struct{}, lebreServer.ServerConfig.PoolConfig.MaxConns)
 
-	if serverConfig.PoolConfig.BackupOn {
-		interval := time.Duration(serverConfig.PoolConfig.BackupCycle) * time.Millisecond
-		go Interval(interval, func() { backup(cache) })
+	if lebreServer.ServerConfig.PoolConfig.BackupOn {
+		interval := time.Duration(lebreServer.ServerConfig.PoolConfig.BackupCycle) * time.Millisecond
+		go Interval(interval, lebreServer.backup)
 	}
 
-	cli.Launch(fmt.Sprintf("Lebre cache server initiated. Listening on port %d", serverConfig.Port))
+	cli.Launch(fmt.Sprintf("Lebre cache server initiated. Listening on port %d", lebreServer.ServerConfig.Port))
 
 	for {
 		conn, err := listener.Accept()
@@ -364,6 +374,6 @@ func StartServer(serverConfig *ServerConfig) {
 			cli.Error(fmt.Sprintf("Error accepting connection: %s", err))
 			continue
 		}
-		go handleClient(conn, cache, serverCredentials, semaphore)
+		go lebreServer.handleConnection(conn, semaphore)
 	}
 }
