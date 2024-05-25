@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -80,8 +81,8 @@ func DefaultServerConfig() *ServerConfig {
 	}
 }
 
-func (socket *socket) getRequestParts(data string) ([]string, error) {
-	decryptedData, err := RSADecrypt([]byte(data), socket.serverPrivateKey)
+func (socket *socket) getRequestParts(data []byte) ([]string, error) {
+	decryptedData, err := RSADecrypt(data, socket.serverPrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -95,22 +96,19 @@ func (socket *socket) sendMessage(data []byte) error {
 
 	err := binary.Write(&buffer, binary.BigEndian, uint32(len(data)))
 	if err != nil {
-		socket.logger.ErrLog.Printf("ERR couldn't append data length to chunk: %s\n", err)
-		return err
+		return fmt.Errorf("ERR couldn't append data length to chunk: %s", err)
 	}
 
 	// write public key to buffer
 	_, err = buffer.Write(data)
 	if err != nil {
-		socket.logger.ErrLog.Println("ERR couldn't write data to buffer")
-		return err
+		return fmt.Errorf("ERR couldn't write data to buffer: %s", err)
 	}
 
 	// send buffer bytes to the connection
 	_, err = socket.conn.Write(buffer.Bytes())
 	if err != nil {
-		socket.logger.ErrLog.Println("ERR couldn't flush data from buffer to client")
-		return err
+		return fmt.Errorf("ERR couldn't flush data from buffer to client: %s", err)
 	}
 
 	buffer.Reset()
@@ -120,13 +118,13 @@ func (socket *socket) sendMessage(data []byte) error {
 func (socket *socket) respond(data string) {
 	encryptedResponse, err := RSAEncrypt([]byte(data), socket.serverPublicKey)
 	if err != nil {
-		socket.logger.ErrLog.Println(fmt.Sprintf("Error encrypting response: %s", err))
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error encrypting response: %s\n", err))
 		return
 	}
 
 	err = socket.sendMessage(encryptedResponse)
 	if err != nil {
-		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s", err))
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s\n", err))
 		return
 	}
 }
@@ -149,7 +147,7 @@ func (socket *socket) negotiate() error {
 	socket.serverPublicKey = serverPublicKey
 	err = socket.sendMessage([]byte("SERVER RECEIVED KEY"))
 	if err != nil {
-		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s", err))
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending response: %s\n", err))
 		return err
 	}
 
@@ -161,7 +159,7 @@ func (socket *socket) negotiate() error {
 
 	err = socket.sendMessage(publicKey)
 	if err != nil {
-		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending client public key: %s", err))
+		socket.logger.ErrLog.Println(fmt.Sprintf("Error while sending client public key: %s\n", err))
 		return err
 	}
 	return nil
@@ -170,11 +168,11 @@ func (socket *socket) negotiate() error {
 func (lebreServer *LebreServer) newCache() {
 	lebreServer.cache = cache{
 		Data:            make(map[string]cacheNode),
-		Capacity:        lebreServer.cache.Capacity,
+		Capacity:        lebreServer.ServerConfig.PoolConfig.NodeLimit,
 		CumulativeBytes: 0,
-		NodeTimeToLive:  lebreServer.cache.NodeTimeToLive,
-		NodeSize:        lebreServer.cache.NodeSize,
-		LimitInBytes:    lebreServer.cache.LimitInBytes,
+		NodeTimeToLive:  lebreServer.ServerConfig.PoolConfig.TimeToLive,
+		NodeSize:        lebreServer.ServerConfig.PoolConfig.NodeSize,
+		LimitInBytes:    lebreServer.ServerConfig.PoolConfig.NodeLimit,
 	}
 }
 
@@ -240,37 +238,47 @@ func (lebreServer *LebreServer) handleConnection(
 		return
 	}
 
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		cmd := scanner.Text()
-		parts, err := socket.getRequestParts(cmd)
-
+	// var buffer bytes.Buffer
+	reader := bufio.NewReader(conn)
+	for {
+		lengthBytes := make([]byte, 4)
+		_, err := io.ReadFull(reader, lengthBytes)
 		if err != nil {
-			logger.ErrLog.Printf("Error while getting request parts: %s\n", err)
+			logger.ErrLog.Printf("ERR failed to read message length: %s\n", err)
+			return
+		}
+
+		// retrieve first 32 bits containing the message length integer
+		messageLength := binary.BigEndian.Uint32(lengthBytes)
+		messageBytes := make([]byte, messageLength)
+		_, err = io.ReadFull(reader, messageBytes)
+		if err != nil {
+			logger.ErrLog.Printf("ERR failed to read message: %s\n", err)
+			return
+		}
+		requestParts, err := socket.getRequestParts(messageBytes)
+		if err != nil {
+			logger.ErrLog.Printf("ERR couldn't get request parts: %s\n", err)
 			conn.Close()
 			return
 		}
 
-		if len(parts) == 0 {
+		commandParts := requestParts[1:]
+
+		if len(commandParts) == 0 {
 			continue
 		}
 
-		if parts[0] == "AUTH" {
-			password := sha256.Sum256([]byte(parts[1]))
-			logger.Log(fmt.Sprintf("[REQUEST]: AUTH %s %x", parts[1], password))
-		} else {
-			logger.Log(fmt.Sprintf("[REQUEST]: %s", strings.Join(parts, " ")))
-		}
-
-		switch parts[0] {
+		switch commandParts[0] {
 		case "AUTH":
-			if len(parts) != 3 {
+			logger.Log(fmt.Sprintf("[REQUEST]: %s %x", strings.Join(requestParts[0:2], " "), sha256.Sum256([]byte(requestParts[3]))))
+			if len(commandParts) != 3 {
 				socket.respond("ERR wrong number of arguments for AUTH")
 				continue
 			}
 
-			incomingUserHash := sha256.Sum256([]byte(parts[1]))
-			incomingPasswordHash := sha256.Sum256([]byte(parts[2]))
+			incomingUserHash := sha256.Sum256([]byte(commandParts[1]))
+			incomingPasswordHash := sha256.Sum256([]byte(commandParts[2]))
 			incomingUserHashString := hex.EncodeToString(incomingUserHash[:])
 			incomingPasswordHashString := hex.EncodeToString(incomingPasswordHash[:])
 
@@ -280,55 +288,57 @@ func (lebreServer *LebreServer) handleConnection(
 				continue
 			}
 
-			logger.Log(fmt.Sprintf("[LOG]: Authenticated with user: %s\n", parts[1]))
+			logger.Log(fmt.Sprintf("[LOG]: Authenticated with user: %s", commandParts[1]))
 
 			authorized = true
 
 		case "SET":
+			logger.Log(fmt.Sprintf("[REQUEST]: %s %x", strings.Join(requestParts[0:3], " "), sha256.Sum256([]byte(requestParts[3]))))
 			if !authorized {
 				socket.respond("ERR unauthorized")
 				continue
 			}
-			if len(parts) != 3 {
+			if len(commandParts) != 3 {
 				socket.respond("ERR wrong number of arguments for SET")
 				continue
 			}
-			err := lebreServer.cache.Set(parts[1], parts[2])
+			value := strings.ReplaceAll(commandParts[2], "\\u0020", "\u0020")
+			err := lebreServer.cache.Set(commandParts[1], value)
 			if err != nil {
 				socket.respond(fmt.Sprintf("ERR %s", err))
 				continue
 			}
-			_, err = conn.Write([]byte("OK\n"))
-			if err != nil {
-				logger.ErrLog.Println("ERR couldn't write back to socket")
-			}
+
+			socket.respond("OK")
 
 		case "GET":
+			logger.Log(fmt.Sprintf("[REQUEST]: %s", strings.Join(requestParts, " ")))
 			if !authorized {
 				socket.respond("ERR unauthorized")
 				continue
 			}
-			if len(parts) != 2 {
+			if len(commandParts) != 2 {
 				socket.respond("ERR wrong number of arguments for GET")
 				continue
 			}
-			value, ok := lebreServer.cache.Get(parts[1])
-			if ok {
+			value, ok := lebreServer.cache.Get(commandParts[1])
+			if ok && len(value) > 0 {
 				socket.respond(fmt.Sprintf("VALUE %s", value))
 			} else {
 				socket.respond("NOT_FOUND")
 			}
 
 		case "DELETE":
+			logger.Log(fmt.Sprintf("[REQUEST]: %s", strings.Join(requestParts, " ")))
 			if !authorized {
 				socket.respond("ERR unauthorized")
 				continue
 			}
-			if len(parts) != 2 {
+			if len(commandParts) != 2 {
 				socket.respond("ERR wrong number of arguments for DELETE")
 				continue
 			}
-			lebreServer.cache.Delete(parts[1])
+			lebreServer.cache.Delete(commandParts[1])
 			socket.respond("OK")
 
 		default:

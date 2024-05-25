@@ -31,7 +31,7 @@ func (cache *cache) Set(key, value string) error {
 	incomingDataByteSize := len(key) + len(value)
 
 	if incomingDataByteSize > int(cache.NodeSize) {
-		return fmt.Errorf("node byte limit exceeded. Max is: %d", cache.NodeSize)
+		return fmt.Errorf("node byte limit exceeded. Max is: %d, got %d", cache.NodeSize)
 	}
 
 	if incomingDataByteSize+int(cache.CumulativeBytes) > int(cache.LimitInBytes) {
@@ -62,7 +62,7 @@ func (cache *cache) Get(key string) (string, bool) {
 
 	node, ok := cache.Data[key]
 
-	if node.Expiry.After(time.Now()) {
+	if node.Expiry.Before(time.Now()) {
 		delete(cache.Data, key)
 		return "", true
 	}
