@@ -97,3 +97,8 @@ V1.0 GET ExampleValue
 ```
 V1.0 DELETE ExampleValue
 ```
+
+### Encryption
+
+The protocol utilizes RSA asymmetric encryption to encrypt the exchange of data between client and server.
+To achieve this, at the establishment of a connection, the client and server will generate each a pair of asymetric keys and then exchange the public keys.
