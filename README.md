@@ -50,6 +50,7 @@ After running ```lebre init``` this is the resulting config file:
 
 ### config.json example
 ```json
+{
     "user": "f0bdfe12c09d3...",
     "password": "11aec05dc27...",
     "port": 5051,
