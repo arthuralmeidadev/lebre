@@ -20,7 +20,7 @@ type poolConfig struct {
 	// Maximum number of simultaneous connections
 	MaxConns uint8 `json:"maxConns"`
 	// Connection timout threshold in milliseconds
-	TimeoutThreshold uint16 `json:"timeoutThreshold"`
+	ConnectionTimeout uint16 `json:"connectionTimeout"`
 	// Backup for server downtime
 	BackupOn bool `json:"backUpOn"`
 	// Backup cycle in milliseconds
@@ -33,8 +33,6 @@ type poolConfig struct {
 	NodeSize uint16 `json:"nodeSize"`
 	// cache size maximum limit in bytes
 	CacheLimit uint32 `json:"cacheLimit"`
-	// Maximum idle time in seconds before memory cleanup
-	IdleThreshold uint16 `json:"idleThreshold"`
 }
 
 type ServerConfig struct {
@@ -69,14 +67,13 @@ func DefaultServerConfig() *ServerConfig {
 		Port:             5051,
 		EnableEncryption: true,
 		PoolConfig: &poolConfig{
-			MaxConns:         15,
-			TimeoutThreshold: 5000,
-			BackupCycle:      300000,
-			TimeToLive:       300,
-			NodeLimit:        3500,
-			NodeSize:         1024,
-			CacheLimit:       5242880,
-			IdleThreshold:    3600,
+			MaxConns:          15,
+			ConnectionTimeout: 5000,
+			BackupCycle:       300000,
+			TimeToLive:        300,
+			NodeLimit:         3500,
+			NodeSize:          1024,
+			CacheLimit:        5242880,
 		},
 	}
 }
@@ -226,6 +223,9 @@ func (lebreServer *LebreServer) handleConnection(
 		return
 	}
 
+	ConnectionTimeout := time.Duration(lebreServer.ServerConfig.PoolConfig.ConnectionTimeout)
+	conn.SetDeadline(time.Now().Add(time.Millisecond * ConnectionTimeout))
+
 	socket := &socket{
 		serverPrivateKey: serverPrivateKey,
 		logger:           NewCli(),
@@ -241,6 +241,7 @@ func (lebreServer *LebreServer) handleConnection(
 	// var buffer bytes.Buffer
 	reader := bufio.NewReader(conn)
 	for {
+		conn.SetReadDeadline(time.Now().Add(time.Millisecond * ConnectionTimeout))
 		lengthBytes := make([]byte, 4)
 		_, err := io.ReadFull(reader, lengthBytes)
 		if err != nil {

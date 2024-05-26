@@ -31,7 +31,7 @@ func (cache *cache) Set(key, value string) error {
 	incomingDataByteSize := len(key) + len(value)
 
 	if incomingDataByteSize > int(cache.NodeSize) {
-		return fmt.Errorf("node byte limit exceeded. Max is: %d, got %d", cache.NodeSize)
+		return fmt.Errorf("node byte limit exceeded. Max is: %d", cache.NodeSize)
 	}
 
 	if incomingDataByteSize+int(cache.CumulativeBytes) > int(cache.LimitInBytes) {

@@ -69,8 +69,8 @@ func main() {
 			&serverConfig.PoolConfig.MaxConns,
 		)
 		cli.Input(
-			fmt.Sprintf("Connection timout threshold in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.TimeoutThreshold),
-			serverConfig.PoolConfig.TimeoutThreshold,
+			fmt.Sprintf("Connection timout threshold in milliseconds (DEFAULT %d)", serverConfig.PoolConfig.ConnectionTimeout),
+			serverConfig.PoolConfig.ConnectionTimeout,
 		)
 
 		var backupOn string
@@ -100,10 +100,6 @@ func main() {
 		cli.Input(
 			fmt.Sprintf("Cache limit in bytes (DEFAULT %d)", serverConfig.PoolConfig.CacheLimit),
 			serverConfig.PoolConfig.CacheLimit,
-		)
-		cli.Input(
-			fmt.Sprintf("Maximum idle time in seconds before memory cleanup (DEFAULT %d)", serverConfig.PoolConfig.IdleThreshold),
-			serverConfig.PoolConfig.IdleThreshold,
 		)
 
 		userHash := sha256.Sum256([]byte(serverConfig.User))

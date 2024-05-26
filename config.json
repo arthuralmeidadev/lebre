@@ -6,7 +6,7 @@
     "enableEncryption": true,
     "poolConfig": {
         "maxConns": 15,
-        "timeoutThreshold": 5000,
+        "ConnectionTimeout": 5000,
         "backUpOn": false,
         "backUpCycle": 300000,
         "timeToLive": 300,
