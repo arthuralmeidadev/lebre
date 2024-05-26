@@ -126,8 +126,8 @@ func (cli *Cli) Help(command string) {
 		commandsTable := [][3]string{
 			{"init", "", "Creates a new server"},
 			{"start", "", "Starts the server"},
-			{"status", "", "Returns the status of the server"},
-			{"config (get|set)", "", "Server configuration"},
+			// {"status", "", "Returns the status of the server"},
+			// {"config (get|set)", "", "Server configuration"},
 			{"help", "[command]", "Shows this menu"},
 		}
 

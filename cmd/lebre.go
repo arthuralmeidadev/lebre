@@ -160,11 +160,17 @@ func main() {
 
 		server.Start()
 
-	case "config":
-		if len(arguments) != 3 {
-			cli.Error("Missing arguments for 'config'\ntype 'lebre help' to see all available commands")
-			os.Exit(1)
-		}
+	// case "config":
+	// 	if len(arguments) != 3 {
+	// 		cli.Error("Missing arguments for 'config'\ntype 'lebre help' to see all available commands")
+	// 		os.Exit(1)
+	// 	}
+
+	// case "status":
+	// 	if server.Running {
+	// 		cli.Error("The Server is offline")
+	// 		os.Exit(1)
+	// 	}
 
 	default:
 		cli.Error(fmt.Sprintf("Error: unknown command '%s'\n", arguments[0]))
