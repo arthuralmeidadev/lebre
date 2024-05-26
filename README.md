@@ -36,7 +36,7 @@
 
 ## Description
 
-Lebre is caching database server built in Go designed to be fast and simple.
+Lebre is a caching database server built in Go designed to be fast and simple.
 These are the available CLI commands
 
 ```
@@ -48,7 +48,7 @@ These are the available CLI commands
 ```
 After running ```lebre init``` this is the resulting config file:
 
-### config.json ecample
+### config.json example
 ```json
     "user": "f0bdfe12c09d3...",
     "password": "11aec05dc27...",
@@ -68,7 +68,7 @@ After running ```lebre init``` this is the resulting config file:
 }
 ```
 
-## Protocol
+## The protocol
 
 The protocol used to transfer messages over TCP is built on the simple idea of boundaries by length.
 Messages will be written to buffers with their length prepended in a 32-bit long integer value stored in Big Endian order.
