@@ -81,12 +81,15 @@ Verb - AUTH/SET/GET/DELETE
 
 Key - {string, no spaces}
 
-Value (AUTH/SET) - {string/hash}
+Value (AUTH/SET) - {string/hash, spaces as '\\u0020'}
 
 ### Examples
 
 ```
-V1.0 SET ExampleValue HelloWorld!
+V1.0 AUTH root password1234
+```
+```
+V1.0 SET ExampleValue Hello\\u0020World!
 ```
 ```
 V1.0 GET ExampleValue
