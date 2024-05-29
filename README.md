@@ -40,7 +40,7 @@ Lebre is a caching database server built in Go designed to be fast and simple.
 
 You can download the Javascript API for Lebre through the node package manager:
 ```console
-node i lebre
+npm i lebre
 ```
 or using Yarn:
 ```console
