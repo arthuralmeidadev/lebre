@@ -68,7 +68,7 @@ func DefaultServerConfig() *ServerConfig {
 		EnableEncryption: true,
 		PoolConfig: &poolConfig{
 			MaxConns:          15,
-			ConnectionTimeout: 5000,
+			ConnectionTimeout: 30000,
 			BackupCycle:       300000,
 			TimeToLive:        300,
 			NodeLimit:         3500,
