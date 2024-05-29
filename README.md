@@ -92,7 +92,7 @@ Verb - AUTH/SET/GET/DELETE
 
 Key - {string, no spaces}
 
-Value (AUTH/SET) - {string/hash, spaces as '\\u0020'}
+Value (AUTH/SET) - {string/hash, spaces as '\\\u0020'}
 
 ### Examples
 
